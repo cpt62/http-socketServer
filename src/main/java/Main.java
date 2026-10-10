@@ -34,6 +34,10 @@ public class Main {
             }
         });
 
+        server.addHandler("POST:/classic.html", ((request, outputStream) -> {
+
+        }));
+
         server.start();
     }
 }

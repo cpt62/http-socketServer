@@ -96,6 +96,11 @@ public class Server {
 //                            String protocol = request.getProtocol();
                             Handler handler = handlers.get(method + ":" + message);
                             if (handler == null) {
+                                outer.write(("HTTP/1.1 404 Not Found\r\n" +
+                                        "Content-Length: 0\r\n" +
+                                        "Connection: close\r\n" +
+                                        "\r\n").getBytes());
+                                outer.flush();
                                 return;
                             }
                             handler.handle(request, outer);
