@@ -8,7 +8,8 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.UnknownHostException;
-import java.util.Properties;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -24,6 +25,8 @@ public class Server {
     private ConcurrentHashMap<String, Handler> handlers;
     private ExecutorService service;
     private int threadCount;
+    private static byte[] endRequestLine = new byte[]{'\r', '\n'};
+    private static byte[] endHeaders = new byte[]{'\r', '\n', '\r', '\n'};
 
     private Server() {
         getServerConfig();
@@ -72,6 +75,47 @@ public class Server {
         handlers.put(method, handler);
     }
 
+    // возвращаем массив байт в случаях некорретного запроса на сервер
+    private byte[] badRequest(String message) {
+        return ("HTTP/1.1 404 " + message + " " + "\r\n" +
+                "Content-Length: 0\r\n" +
+                "Connection: close\r\n" +
+                "\r\n").getBytes();
+    }
+
+    // метод поиска индексов окончания блоков  RL и Headers
+    private int indexOf(byte[] inputArr, byte[] searchArr, int start, int end) {
+        outer:
+        for (int i = 0; i < inputArr.length; i++) {
+            for (int j = 0; j < searchArr.length; j++) {
+                if (inputArr[i + j] != searchArr[j]) {
+                    continue outer;
+                }
+            }
+            return i;
+        }
+        return -1;
+    }
+
+    public Map<String, List<String>> getHeaders(String headers) {
+        Map<String, List<String>> headersMap = new HashMap<>();
+        String[] headersArr = headers.split("\r\n");
+        for (String header : headersArr) {
+            if (header.isEmpty()) continue;
+
+            int indexSpace = header.indexOf(":");
+            if (indexSpace == -1) continue;
+
+            String key = header.substring(0, indexSpace).trim();
+            String value = header.substring(indexSpace + 1).trim();
+
+            headersMap.computeIfAbsent(key, k -> new ArrayList<>()).add(value);
+        }
+
+        return headersMap;
+
+    }
+
     public void start() {
         Thread thread = new Thread(() -> {
             System.out.println("Сервер запущен. Слушает порт " + port + "...");
@@ -84,30 +128,41 @@ public class Server {
                 }
                 Socket clientSocket = socket;
                 service.submit(() -> {
+                    int limit = 4096;
+                    byte[] bytes = new byte[limit];
                     try (
-                            BufferedReader reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-                            BufferedOutputStream outer = new BufferedOutputStream(clientSocket.getOutputStream());
+                            var reader = new BufferedInputStream(clientSocket.getInputStream());
+                            var outer = new BufferedOutputStream(clientSocket.getOutputStream());
                     ) {
-                        String requestLine = reader.readLine();
-                        if (!requestLine.isEmpty()) {
-                            Request request = Request.getInstance(requestLine);
-                            String method = request.getMethod();
-                            String message = request.getMessage();
-//                            String protocol = request.getProtocol();
-                            Handler handler = handlers.get(method + ":" + message);
-                            if (handler == null) {
-                                outer.write(("HTTP/1.1 404 Not Found\r\n" +
-                                        "Content-Length: 0\r\n" +
-                                        "Connection: close\r\n" +
-                                        "\r\n").getBytes());
-                                outer.flush();
-                                return;
-                            }
-                            handler.handle(request, outer);
-                        } else {
-                            System.err.println("Request-line не соответствует RFC");
+                        // число байт, которые получили от сервера
+                        var read = reader.read(bytes);
+
+                        if (read == limit) {
+                            outer.write(badRequest("Too large request"));
                             return;
                         }
+                        // получаю request line, создаем экземпляр Request
+                        int endRequestLine = indexOf(bytes, Server.endRequestLine, 0, limit);
+                        byte[] newArr = Arrays.copyOf(bytes, endRequestLine);
+                        Optional<Request> request = Request.getInstance(
+                                new String(newArr, 0, endRequestLine, StandardCharsets.UTF_8));
+                        Request httpRequest = null;
+                        if (request.isEmpty()) {
+                            outer.write(badRequest("Bad http Request"));
+                            return;
+                        }
+                        httpRequest = request.orElse(null);
+                        endRequestLine += 2;
+
+                        //получаю заголовки
+                        int endHeaders = indexOf(bytes, Server.endHeaders, endRequestLine + 2, limit);
+                        if (endHeaders != -1) {
+                            String headersString = new String(bytes, endRequestLine, endHeaders - endRequestLine, StandardCharsets.UTF_8);
+                            httpRequest.setHeaders(getHeaders(headersString));
+                        }
+
+                        handlers.get(httpRequest.getMethod());
+
                     } catch (IOException e) {
                         System.out.println("Ошибка создания IO потоков");
                     }
