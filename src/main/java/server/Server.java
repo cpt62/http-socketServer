@@ -149,6 +149,7 @@ public class Server {
                         Request httpRequest = null;
                         if (request.isEmpty()) {
                             outer.write(badRequest("Bad http Request"));
+                            outer.flush();
                             return;
                         }
                         httpRequest = request.orElse(null);
@@ -161,7 +162,14 @@ public class Server {
                             httpRequest.setHeaders(getHeaders(headersString));
                         }
 
-                        handlers.get(httpRequest.getMethod());
+                        //Достаем handler
+                        Handler handler = handlers.get(httpRequest.getMethod() + ":" + httpRequest.getMessage());
+                        if (handler == null) {
+                            outer.write(badRequest("Bad request"));
+                            outer.flush();
+                            return;
+                        }
+                        handler.handle(httpRequest, outer);
 
                     } catch (IOException e) {
                         System.out.println("Ошибка создания IO потоков");
@@ -171,5 +179,4 @@ public class Server {
         });
         thread.start();
     }
-
 }
